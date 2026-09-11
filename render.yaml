@@ -18,5 +18,17 @@ services:
         value: https://api.meta.ai/v1
       - key: MODEL_NAME
         value: muse-spark-1.3
+      - key: CRON_SECRET
+        value: vovo-cron-123
+      - key: PYTHON_VERSION
+        value: 3.11.0
+  - type: cron
+    name: vovo-tete-daily
+    runtime: python
+    plan: free
+    schedule: "0 8 * * *"
+    buildCommand: "pip install requests"
+    startCommand: 'curl "https://vovo-tete-bot-1.onrender.com/cron/daily?secret=vovo-cron-123"'
+    envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
