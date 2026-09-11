@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="0 0 500 500">
+  <!-- Fundo -->
+  <circle cx="250" cy="250" r="240" fill="#FFF8F0"/>
+  <circle cx="250" cy="250" r="240" fill="none" stroke="#8B4513" stroke-width="8"/>
+  <circle cx="250" cy="250" r="215" fill="none" stroke="#D2691E" stroke-width="3" stroke-dasharray="12 8"/>
+  
+  <!-- Chapéu de chef simplificado -->
+  <g transform="translate(250,135)">
+    <ellipse cx="0" cy="0" rx="55" ry="30" fill="#fff" stroke="#8B4513" stroke-width="5"/>
+    <ellipse cx="-30" cy="-10" rx="28" ry="28" fill="#fff" stroke="#8B4513" stroke-width="5"/>
+    <ellipse cx="30" cy="-10" rx="28" ry="28" fill="#fff" stroke="#8B4513" stroke-width="5"/>
+    <ellipse cx="0" cy="-22" rx="30" ry="26" fill="#fff" stroke="#8B4513" stroke-width="5"/>
+    <rect x="-45" y="10" width="90" height="22" rx="6" fill="#8B4513"/>
+  </g>
+
+  <!-- Coração -->
+  <g transform="translate(250,195)">
+    <path d="M0 18 C -25 -5 -45 10 0 32 C 45 10 25 -5 0 18 Z" fill="#C0392B"/>
+  </g>
+
+  <!-- Textos -->
+  <text x="250" y="270" text-anchor="middle" font-family="Georgia, serif" font-size="48" font-style="italic" fill="#8B4513">Delícias</text>
+  <text x="250" y="325" text-anchor="middle" font-family="Georgia, serif" font-size="44" font-weight="bold" fill="#5D2E0C">da Vovó Teté</text>
+  <text x="250" y="365" text-anchor="middle" font-family="Verdana, sans-serif" font-size="20" letter-spacing="4" fill="#D2691E">FEITO COM AMOR</text>
+  
+  <!-- Ramos -->
+  <g stroke="#8B4513" stroke-width="3" fill="none">
+    <path d="M110 330 Q150 350 190 340"/>
+    <path d="M390 330 Q350 350 310 340"/>
+  </g>
+  <g fill="#D2691E">
+    <ellipse cx="140" cy="340" rx="8" ry="5" transform="rotate(-20 140 340)"/>
+    <ellipse cx="165" cy="345" rx="8" ry="5" transform="rotate(20 165 345)"/>
+    <ellipse cx="360" cy="340" rx="8" ry="5" transform="rotate(20 360 340)"/>
+    <ellipse cx="335" cy="345" rx="8" ry="5" transform="rotate(-20 335 345)"/>
+  </g>
+</svg>

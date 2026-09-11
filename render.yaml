@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: vovo-tete-bot
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bot_vovo_tete:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120"
+    envVars:
+      - key: PAGE_ID
+        sync: false
+      - key: PAGE_ACCESS_TOKEN
+        sync: false
+      - key: VERIFY_TOKEN
+        value: vovo-tete-123
+      - key: MODEL_API_KEY
+        sync: false
+      - key: MODEL_BASE_URL
+        value: https://api.meta.ai/v1
+      - key: MODEL_NAME
+        value: muse-spark-1.3
+      - key: PYTHON_VERSION
+        value: 3.11.0
