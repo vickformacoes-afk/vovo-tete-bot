@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+vovo.db
+artes/
+*.png
+!static/*.png
