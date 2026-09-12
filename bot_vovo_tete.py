@@ -271,6 +271,32 @@ def gerar_arte_diaria(dest_path: str) -> str:
 def cron_daily():
     if request.args.get("secret") != CRON_SECRET:
         return jsonify({"ok": False, "error": "bad secret"}), 403
+    dry = request.args.get("dry", "0") == "1"
+    hoje = datetime.date.today()
+    tema = TEMAS_SEMANA[hoje.weekday()]
+    legenda = gerar_legenda_diaria()
+    post_id = str(uuid.uuid4())[:8]
+    arte_filename = f"arte-{post_id}.png"
+    arte_path = os.path.join(ARTES_DIR, arte_filename)
+    arte_ok = False
+    try:
+        gerar_arte_diaria(arte_path)
+        arte_ok = True
+    except Exception as e:
+        print("arte_fail:", e)
+        arte_path = ""
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO posts (id, created_at, status, legenda, arte_path, tema, scheduled_for) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (post_id, datetime.datetime.now().isoformat(), "pending" if not dry else "draft",
+         legenda, arte_path if arte_ok else "", tema, hoje.isoformat())
+    )
+    conn.commit()
+    conn.close()
+    if dry:
+        return jsonify({"ok": True, "dry": True, "post_id": post_id, "legenda": legenda,
+                        "arte": arte_path if arte_ok else None, "tema": tema})
+    return jsonify({"ok": True, "post_id": post_id, "status": "pending", "message": "Post guardado para aprovacao. Abre /dashboard para rever."})
 
 @app.post("/admin/update-token")
 def update_token():
@@ -282,7 +308,6 @@ def update_token():
         return jsonify({"ok": False, "error": "token invalido"}), 400
     global PAGE_TOKEN
     PAGE_TOKEN = new_token
-    import subprocess
     env_path = os.path.join(os.path.dirname(__file__), ".env")
     try:
         lines = []
@@ -315,33 +340,6 @@ def check_token():
         return jsonify({"ok": ok, "page": data.get("name", ""), "page_id": data.get("id", ""), "token_start": PAGE_TOKEN[:30] + "..."})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
-
-    dry = request.args.get("dry", "0") == "1"
-    hoje = datetime.date.today()
-    tema = TEMAS_SEMANA[hoje.weekday()]
-    legenda = gerar_legenda_diaria()
-    post_id = str(uuid.uuid4())[:8]
-    arte_filename = f"arte-{post_id}.png"
-    arte_path = os.path.join(ARTES_DIR, arte_filename)
-    arte_ok = False
-    try:
-        gerar_arte_diaria(arte_path)
-        arte_ok = True
-    except Exception as e:
-        print("arte_fail:", e)
-        arte_path = ""
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO posts (id, created_at, status, legenda, arte_path, tema, scheduled_for) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (post_id, datetime.datetime.now().isoformat(), "pending" if not dry else "draft",
-         legenda, arte_path if arte_ok else "", tema, hoje.isoformat())
-    )
-    conn.commit()
-    conn.close()
-    if dry:
-        return jsonify({"ok": True, "dry": True, "post_id": post_id, "legenda": legenda,
-                        "arte": arte_path if arte_ok else None, "tema": tema})
-    return jsonify({"ok": True, "post_id": post_id, "status": "pending", "message": "Post guardado para aprovacao. Abre /dashboard para rever."})
 
 @app.get("/artes/<path:filename>")
 def serve_arte(filename):
