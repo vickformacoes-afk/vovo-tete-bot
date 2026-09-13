@@ -22,6 +22,8 @@ MODEL_NAME = (os.getenv("MODEL_NAME") or "muse-spark-1.3").strip()
 FALLBACK_MODELS = ["muse-spark-1.3", "muse-spark-1.3-contributor", "muse-spark-1.2"]
 CRON_SECRET = os.getenv("CRON_SECRET", "vovo-cron-123")
 DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", "vovo-dash-123")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GITHUB_GIST_ID = os.getenv("GITHUB_GIST_ID", "")
 
 app = Flask(__name__)
 
@@ -68,6 +70,102 @@ def init_db():
     conn.close()
 
 init_db()
+
+# ─── GitHub Gist backup/restore ───────────────────────────────────────────
+
+def gist_backup():
+    """Backup entire database to GitHub Gist as JSON"""
+    if not GITHUB_TOKEN or not GITHUB_GIST_ID:
+        print("gist_backup: GITHUB_TOKEN or GITHUB_GIST_ID not set")
+        return False
+    try:
+        conn = get_db()
+        posts = [dict(r) for r in conn.execute("SELECT * FROM posts").fetchall()]
+        messages = [dict(r) for r in conn.execute("SELECT * FROM messages").fetchall()]
+        settings = [dict(r) for r in conn.execute("SELECT * FROM settings").fetchall()]
+        conn.close()
+        backup = {
+            "version": "1.0",
+            "timestamp": datetime.datetime.now().isoformat(),
+            "posts": posts,
+            "messages": messages,
+            "settings": settings
+        }
+        content = json.dumps(backup, ensure_ascii=False, indent=2)
+        url = f"https://api.github.com/gists/{GITHUB_GIST_ID}"
+        r = requests.patch(url, json={"files": {"vovo-db.json": {"content": content}}},
+                           headers={"Authorization": f"token {GITHUB_TOKEN}",
+                                    "Accept": "application/vnd.github.v3+json"},
+                           timeout=30)
+        if r.status_code == 200:
+            print(f"gist_backup: OK - {len(posts)} posts, {len(messages)} messages")
+            return True
+        else:
+            print(f"gist_backup: FAIL {r.status_code} {r.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"gist_backup: ERROR {e}")
+        return False
+
+def gist_restore():
+    """Restore database from GitHub Gist"""
+    if not GITHUB_TOKEN or not GITHUB_GIST_ID:
+        print("gist_restore: GITHUB_TOKEN or GITHUB_GIST_ID not set")
+        return False
+    try:
+        url = f"https://api.github.com/gists/{GITHUB_GIST_ID}"
+        r = requests.get(url, headers={"Authorization": f"token {GITHUB_TOKEN}",
+                                        "Accept": "application/vnd.github.v3+json"},
+                         timeout=30)
+        if r.status_code != 200:
+            print(f"gist_restore: FAIL {r.status_code}")
+            return False
+        data = r.json()
+        if "vovo-db.json" not in data.get("files", {}):
+            print("gist_restore: vovo-db.json not found in Gist")
+            return False
+        content = data["files"]["vovo-db.json"]["content"]
+        backup = json.loads(content)
+        if "posts" not in backup:
+            print("gist_restore: invalid backup format")
+            return False
+        conn = get_db()
+        conn.execute("DELETE FROM posts")
+        conn.execute("DELETE FROM messages")
+        conn.execute("DELETE FROM settings")
+        for post in backup.get("posts", []):
+            conn.execute(
+                "INSERT OR REPLACE INTO posts (id, created_at, status, legenda, arte_path, tema, scheduled_for, published_at, fb_post_id, fb_response, rejected_reason, recreate_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (post["id"], post["created_at"], post["status"], post.get("legenda"), post.get("arte_path"), post.get("tema"), post.get("scheduled_for"), post.get("published_at"), post.get("fb_post_id"), post.get("fb_response"), post.get("rejected_reason"), post.get("recreate_count", 0))
+            )
+        for msg in backup.get("messages", []):
+            conn.execute(
+                "INSERT OR REPLACE INTO messages (id, received_at, psid, sender_name, text, reply) VALUES (?, ?, ?, ?, ?, ?)",
+                (msg["id"], msg["received_at"], msg.get("psid"), msg.get("sender_name"), msg.get("text"), msg.get("reply"))
+            )
+        for setting in backup.get("settings", []):
+            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                         (setting["key"], setting["value"]))
+        conn.commit()
+        conn.close()
+        print(f"gist_restore: OK - {len(backup.get('posts',[]))} posts, {len(backup.get('messages',[]))} messages")
+        return True
+    except Exception as e:
+        print(f"gist_restore: ERROR {e}")
+        return False
+
+def auto_backup():
+    """Auto-backup: called after every DB change"""
+    try:
+        gist_backup()
+    except Exception as e:
+        print(f"auto_backup error: {e}")
+
+# Run restore on startup
+try:
+    gist_restore()
+except Exception as e:
+    print(f"startup restore error: {e}")
 
 SYSTEM_PROMPT = """Es a Vovo Tete, dona das Delicias da Vovo Tete.
 Falas com carinho, como uma avo: 'meu amor, minha filha'.
@@ -298,6 +396,7 @@ def cron_daily():
     )
     conn.commit()
     conn.close()
+    auto_backup()
     if dry:
         return jsonify({"ok": True, "dry": True, "post_id": post_id, "legenda": legenda,
                         "arte": arte_path if arte_ok else None, "tema": tema})
@@ -570,6 +669,7 @@ def api_approve(post_id):
                      (datetime.datetime.now().isoformat(), json.dumps(fb), post_id))
         conn.commit()
         conn.close()
+        auto_backup()
         return jsonify({"ok": True, "fb": fb})
     except Exception as e:
         conn.close()
@@ -585,6 +685,7 @@ def api_reject(post_id):
     conn.execute("UPDATE posts SET status='rejected', rejected_reason=? WHERE id=?", (reason, post_id))
     conn.commit()
     conn.close()
+    auto_backup()
     return jsonify({"ok": True})
 
 @app.post("/api/posts/<post_id>/recreate")
@@ -615,6 +716,7 @@ def api_recreate(post_id):
     conn.execute("UPDATE posts SET status='recreated' WHERE id=?", (post_id,))
     conn.commit()
     conn.close()
+    auto_backup()
     return jsonify({"ok": True, "new_post_id": new_id})
 
 @app.get("/api/stats")
@@ -693,6 +795,7 @@ def api_schedule():
     )
     conn.commit()
     conn.close()
+    auto_backup()
     return jsonify({"ok": True, "post_id": post_id, "scheduled_for": dt.isoformat()})
 
 @app.post("/api/generate-image")
@@ -795,6 +898,7 @@ def api_cancel_scheduled(post_id):
     conn.execute("UPDATE posts SET status='cancelled' WHERE id=? AND status='scheduled'", (post_id,))
     conn.commit()
     conn.close()
+    auto_backup()
     return jsonify({"ok": True})
 
 @app.post("/api/scheduled/<post_id>/publish-now")
@@ -813,6 +917,7 @@ def api_publish_now(post_id):
                      (datetime.datetime.now().isoformat(), json.dumps(fb), post_id))
         conn.commit()
         conn.close()
+        auto_backup()
         return jsonify({"ok": True, "fb": fb})
     except Exception as e:
         conn.close()
@@ -838,6 +943,8 @@ def cron_check_scheduled():
             conn.execute("UPDATE posts SET status='failed', rejected_reason=? WHERE id=?", (str(e)[:500], row["id"]))
     conn.commit()
     conn.close()
+    if published:
+        auto_backup()
     return jsonify({"ok": True, "published_count": len(published), "published_ids": published})
 
 @app.get("/")

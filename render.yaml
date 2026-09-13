@@ -24,6 +24,10 @@ services:
         value: vovo-dash-123
       - key: WHATSAPP_NUMBER
         value: "+244923303389"
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_GIST_ID
+        sync: false
       - key: PYTHON_VERSION
         value: 3.11.0
   - type: cron
