@@ -462,11 +462,11 @@ def api_messages():
 def api_schedule():
     if not check_dashboard_auth():
         return jsonify({"error": "unauthorized"}), 401
-    data = request.json or {}
-    legenda = data.get("legenda", "").strip()
-    scheduled_date = data.get("date", "")
-    scheduled_time = data.get("time", "12:00")
-    tema = data.get("tema", "")
+    legenda = request.form.get("legenda", "").strip()
+    scheduled_date = request.form.get("date", "")
+    scheduled_time = request.form.get("time", "12:00")
+    tema = request.form.get("tema", "")
+    image_option = request.form.get("image_option", "auto")
     if not legenda or not scheduled_date:
         return jsonify({"error": "legenda e data obrigatorias"}), 400
     try:
@@ -482,12 +482,27 @@ def api_schedule():
     arte_filename = f"arte-{post_id}.png"
     arte_path = os.path.join(ARTES_DIR, arte_filename)
     arte_ok = False
-    try:
-        gerar_arte_diaria(arte_path)
-        arte_ok = True
-    except Exception as e:
-        print("schedule_arte_fail:", e)
-        arte_path = ""
+    if image_option == "upload" and "image" in request.files:
+        f = request.files["image"]
+        if f.filename:
+            ext = os.path.splitext(f.filename)[1].lower() or ".png"
+            arte_filename = f"arte-{post_id}{ext}"
+            arte_path = os.path.join(ARTES_DIR, arte_filename)
+            f.save(arte_path)
+            arte_ok = True
+    elif image_option == "ai":
+        ai_path = request.form.get("ai_image_path", "")
+        if ai_path and os.path.exists(ai_path):
+            import shutil
+            shutil.copy2(ai_path, arte_path)
+            arte_ok = True
+    elif image_option == "auto" or image_option == "":
+        try:
+            gerar_arte_diaria(arte_path)
+            arte_ok = True
+        except Exception as e:
+            print("schedule_arte_fail:", e)
+            arte_path = ""
     conn = get_db()
     conn.execute(
         "INSERT INTO posts (id, created_at, status, legenda, arte_path, tema, scheduled_for) VALUES (?, ?, 'scheduled', ?, ?, ?, ?)",
@@ -496,6 +511,84 @@ def api_schedule():
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "post_id": post_id, "scheduled_for": dt.isoformat()})
+
+@app.post("/api/generate-image")
+def api_generate_image():
+    if not check_dashboard_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.json or {}
+    tema = data.get("tema", "")
+    post_id = str(uuid.uuid4())[:8]
+    arte_filename = f"ai-{post_id}.png"
+    arte_path = os.path.join(ARTES_DIR, arte_filename)
+    FOTOS_AI = {
+        "segunda": ("https://images.unsplash.com/photo-1578985545062-69928b1d9587?q=80&w=1080&auto=format&fit=crop", "Bolo de Chocolate Caseiro"),
+        "terca": ("https://images.unsplash.com/photo-1565958011703-44f9829ba187?q=80&w=1080&auto=format&fit=crop", "Bolo de Morango Fresco"),
+        "quarta": ("https://images.unsplash.com/photo-1509440159596-0249088772ff?q=80&w=1080&auto=format&fit=crop", "Pao Caseiro no Forno"),
+        "quinta": ("https://images.unsplash.com/photo-1551024506-0bccd828d307?q=80&w=1080&auto=format&fit=crop", "Sobremesa Cremosa"),
+        "sexta": ("https://images.unsplash.com/photo-1486427944544-d2c246c4df14?q=80&w=1080&auto=format&fit=crop", "Bolo de Festa Especial"),
+        "sabado": ("https://images.unsplash.com/photo-1464349095431-e9a21285b5f3?q=80&w=1080&auto=format&fit=crop", "Doces Variados Artesanais"),
+        "domingo": ("https://images.unsplash.com/photo-1488477181946-6428a0291777?q=80&w=1080&auto=format&fit=crop", "Sobremesa de Domingo em Familia"),
+    }
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import urllib.request
+        if tema in FOTOS_AI:
+            url, titulo = FOTOS_AI[tema]
+        else:
+            url = "https://images.unsplash.com/photo-1578985545062-69928b1d9587?q=80&w=1080&auto=format&fit=crop"
+            titulo = "Delicia da Vovo"
+        tmp = arte_path + ".src.jpg"
+        urllib.request.urlretrieve(url, tmp)
+        img = Image.open(tmp).convert("RGB")
+        w, h = img.size
+        s = max(1080 / w, 1080 / h)
+        img = img.resize((int(w * s), int(h * s)), Image.LANCZOS)
+        x = (img.width - 1080) // 2
+        y = (img.height - 1080) // 2
+        img = img.crop((x, y, x + 1080, y + 1080))
+        ov = Image.new("RGBA", (1080, 1080), (0, 0, 0, 0))
+        do = ImageDraw.Draw(ov)
+        for yy in range(1080):
+            if yy < 340:
+                do.line([(0, yy), (1080, yy)], fill=(60, 30, 5, int(165 * (1 - yy / 340))))
+            if yy > 600:
+                do.line([(0, yy), (1080, yy)], fill=(40, 20, 5, int(215 * ((yy - 600) / 480))))
+        bg = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+        d = ImageDraw.Draw(bg)
+        def lf(name, size):
+            p = f"C:\\Windows\\Fonts\\{name}"
+            if os.path.exists(p):
+                return ImageFont.truetype(p, size)
+            for alt in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"]:
+                if os.path.exists(alt):
+                    try:
+                        return ImageFont.truetype(alt, size)
+                    except Exception:
+                        pass
+            return ImageFont.load_default()
+        f_t = lf("georgiai.ttf", 80)
+        f_b = lf("georgiab.ttf", 56)
+        f_u = lf("arial.ttf", 38)
+        def ct(yy, t, f, fill, st=2):
+            bb = d.textbbox((0, 0), t, font=f, stroke_width=st)
+            d.text(((1080 - (bb[2] - bb[0])) / 2, yy), t, font=f, fill=fill, stroke_width=st, stroke_fill="#3a1e05")
+        ct(130, titulo.upper(), f_t, "white")
+        d.rounded_rectangle([110, 690, 970, 850], radius=30, fill="#FFF8F0")
+        bb = d.textbbox((0, 0), "Delicias da Vovo Teté", font=f_b)
+        d.text(((1080 - (bb[2] - bb[0])) / 2, 722), "Delicias da Vovo Teté", font=f_b, fill="#5D2E0C")
+        ct(860, "Bolos - Doces - Salgados caseiros", f_u, "white")
+        d.rounded_rectangle([240, 920, 840, 1010], radius=45, fill="#C0392B")
+        ct(938, "Encomenda no WhatsApp", lf("arialbd.ttf", 40), "white", 0)
+        bg.save(arte_path, "PNG")
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        return jsonify({"ok": True, "image_path": arte_path, "image_url": f"/artes/{arte_filename}"})
+    except Exception as e:
+        print("generate_image_fail:", e)
+        return jsonify({"ok": False, "error": str(e)[:500]}), 500
 
 @app.get("/api/scheduled")
 def api_scheduled():
@@ -760,6 +853,12 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#fdf6ee;color:#3a1e0
 .empty{text-align:center;padding:60px;color:#a08060}
 .loading{text-align:center;padding:40px;color:#a08060}
 @media(max-width:600px){.post-card .arte{width:100%;height:200px}.modal .form-row{flex-direction:column}}
+.image-options{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.radio-option{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#fdf6ee;border-radius:10px;cursor:pointer;transition:.2s}
+.radio-option:hover{background:#f0e0cc}
+.radio-option input[type="radio"]{accent-color:#C0392B;width:18px;height:18px}
+.radio-label{font-size:.9rem;color:#5D2E0C;font-weight:500}
+#scheduleImage{padding:10px;border:2px solid #f0e0cc;border-radius:10px;width:100%;font-size:.9rem}
 </style>
 </head>
 <body>
@@ -797,7 +896,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#fdf6ee;color:#3a1e0
   <div class="modal">
     <h2>Agendar Post</h2>
     <label>Tema</label>
-    <select id="scheduleTema">
+    <select id="scheduleTema" onchange="onTemaChange()">
       <option value="">Personalizado</option>
       <option value="segunda">Segunda - Bolo fofinho</option>
       <option value="terca">Terca - Doce que abraca</option>
@@ -813,7 +912,33 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#fdf6ee;color:#3a1e0
       <div><label>Data</label><input type="date" id="scheduleDate"></div>
       <div><label>Hora</label><input type="time" id="scheduleTime" value="12:00"></div>
     </div>
-    <p style="font-size:.8rem;color:#a08060;margin-bottom:15px">Maximo 2 meses de antecedencia. A arte sera gerada automaticamente.</p>
+    <label>Imagem do Post</label>
+    <div class="image-options">
+      <label class="radio-option">
+        <input type="radio" name="imageOption" value="auto" checked onchange="onImageOptionChange()">
+        <span class="radio-label">Gerar automaticamente</span>
+      </label>
+      <label class="radio-option">
+        <input type="radio" name="imageOption" value="upload" onchange="onImageOptionChange()">
+        <span class="radio-label">Subir imagem manual</span>
+      </label>
+      <div id="uploadSection" style="display:none;margin-top:10px">
+        <input type="file" id="scheduleImage" accept="image/*" onchange="previewUpload(this)">
+      </div>
+      <label class="radio-option">
+        <input type="radio" name="imageOption" value="ai" onchange="onImageOptionChange()">
+        <span class="radio-label">Gerar com IA (imagem real)</span>
+      </label>
+      <div id="aiSection" style="display:none;margin-top:10px">
+        <button class="btn btn-recreate" onclick="generateAIImage()" id="btnGenerateAI">Gerar Imagem IA</button>
+      </div>
+    </div>
+    <div id="imagePreview" style="display:none;margin-top:15px;text-align:center">
+      <img id="previewImg" style="max-width:100%;max-height:200px;border-radius:10px;border:2px solid #f0e0cc">
+      <p id="previewLabel" style="font-size:.8rem;color:#a08060;margin-top:5px"></p>
+    </div>
+    <input type="hidden" id="scheduleAiImagePath" value="">
+    <p style="font-size:.8rem;color:#a08060;margin:10px 0">Maximo 2 meses de antecedencia.</p>
     <div class="actions">
       <button class="btn btn-approve" onclick="confirmSchedule()">Agendar</button>
       <button class="btn" onclick="closeModal('scheduleModal')" style="background:#eee">Cancelar</button>
@@ -823,6 +948,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#fdf6ee;color:#3a1e0
 <script>
 const TOKEN = new URLSearchParams(window.location.search).get('token') || '';
 let currentRejectId = null;
+let currentAiImagePath = '';
 
 function getMinDate() {
   const d = new Date();
@@ -839,6 +965,64 @@ async function api(url, opts = {}) {
   const sep = url.includes('?') ? '&' : '?';
   const r = await fetch(url + sep + 'token=' + TOKEN, opts);
   return r.json();
+}
+
+function onImageOptionChange() {
+  const v = document.querySelector('input[name="imageOption"]:checked').value;
+  document.getElementById('uploadSection').style.display = v === 'upload' ? 'block' : 'none';
+  document.getElementById('aiSection').style.display = v === 'ai' ? 'block' : 'none';
+  if (v !== 'upload') document.getElementById('scheduleImage').value = '';
+  if (v !== 'ai') { currentAiImagePath = ''; document.getElementById('scheduleAiImagePath').value = ''; }
+  if (v === 'auto' || v === '') { document.getElementById('imagePreview').style.display = 'none'; }
+}
+
+function onTemaChange() {
+  const tema = document.getElementById('scheduleTema').value;
+  const autoRadio = document.querySelector('input[name="imageOption"][value="auto"]');
+  if (tema && !autoRadio.checked) {
+    autoRadio.checked = true;
+    onImageOptionChange();
+  }
+}
+
+function previewUpload(input) {
+  if (input.files && input.files[0]) {
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      document.getElementById('previewImg').src = e.target.result;
+      document.getElementById('previewLabel').textContent = input.files[0].name;
+      document.getElementById('imagePreview').style.display = 'block';
+    };
+    reader.readAsDataURL(input.files[0]);
+  }
+}
+
+async function generateAIImage() {
+  const tema = document.getElementById('scheduleTema').value || '';
+  const btn = document.getElementById('btnGenerateAI');
+  btn.disabled = true;
+  btn.textContent = 'A gerar...';
+  document.getElementById('imagePreview').style.display = 'none';
+  try {
+    const r = await api('/api/generate-image', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tema})
+    });
+    if (r.ok) {
+      currentAiImagePath = r.image_path;
+      document.getElementById('scheduleAiImagePath').value = r.image_path;
+      document.getElementById('previewImg').src = r.image_url;
+      document.getElementById('previewLabel').textContent = 'Imagem gerada por IA';
+      document.getElementById('imagePreview').style.display = 'block';
+    } else {
+      alert('Erro ao gerar imagem: ' + (r.error || 'desconhecido'));
+    }
+  } catch(e) {
+    alert('Erro de conexao: ' + e.message);
+  }
+  btn.disabled = false;
+  btn.textContent = 'Gerar Imagem IA';
 }
 
 async function loadStats() {
@@ -916,6 +1100,12 @@ function openScheduleModal() {
   document.getElementById('scheduleTime').value = '12:00';
   document.getElementById('scheduleLegenda').value = '';
   document.getElementById('scheduleTema').value = '';
+  document.getElementById('scheduleAiImagePath').value = '';
+  currentAiImagePath = '';
+  document.getElementById('imagePreview').style.display = 'none';
+  document.getElementById('uploadSection').style.display = 'none';
+  document.getElementById('aiSection').style.display = 'none';
+  document.querySelector('input[name="imageOption"][value="auto"]').checked = true;
   document.getElementById('scheduleModal').classList.add('show');
 }
 
@@ -924,14 +1114,31 @@ async function confirmSchedule() {
   const date = document.getElementById('scheduleDate').value;
   const time = document.getElementById('scheduleTime').value;
   const tema = document.getElementById('scheduleTema').value;
+  const imageOption = document.querySelector('input[name="imageOption"]:checked').value;
   if (!legenda) { alert('Escreve uma legenda!'); return; }
   if (!date) { alert('Escolhe uma data!'); return; }
-  const r = await api('/api/schedule', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({legenda, date, time, tema})});
-  if (r.ok) {
+  const fd = new FormData();
+  fd.append('legenda', legenda);
+  fd.append('date', date);
+  fd.append('time', time);
+  fd.append('tema', tema);
+  fd.append('image_option', imageOption);
+  if (imageOption === 'upload') {
+    const fileInput = document.getElementById('scheduleImage');
+    if (fileInput.files && fileInput.files[0]) {
+      fd.append('image', fileInput.files[0]);
+    }
+  }
+  if (imageOption === 'ai') {
+    fd.append('ai_image_path', document.getElementById('scheduleAiImagePath').value);
+  }
+  const r = await fetch('/api/schedule?token=' + TOKEN, {method:'POST', body:fd});
+  const data = await r.json();
+  if (data.ok) {
     alert('Post agendado para ' + date + ' ' + time);
     closeModal('scheduleModal');
     loadPosts('scheduled');
-  } else { alert('Erro: ' + (r.error || 'desconhecido')); }
+  } else { alert('Erro: ' + (data.error || 'desconhecido')); }
 }
 
 async function publishNow(id) {
