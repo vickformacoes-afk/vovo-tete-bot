@@ -418,6 +418,112 @@ def api_import():
     except Exception as e:
         return jsonify({"error": f"invalid JSON: {str(e)}"}), 400
 
+@app.get("/api/post-image/<post_id>")
+def api_post_image(post_id):
+    if not check_dashboard_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    conn = get_db()
+    row = conn.execute("SELECT * FROM posts WHERE id=?", (post_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "post not found"}), 404
+    
+    tema = row["tema"] or ""
+    legenda = row["legenda"] or ""
+    
+    # Generate image based on tema
+    arte_filename = f"post-{post_id}.png"
+    arte_path = os.path.join(ARTES_DIR, arte_filename)
+    
+    # Map tema to day of week
+    day_index = 0
+    for i, t in enumerate(["segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo"]):
+        if t in tema.lower():
+            day_index = i
+            break
+    
+    from PIL import Image, ImageDraw, ImageFont
+    import urllib.request
+    
+    FOTOS_AI = {
+        0: ("https://images.unsplash.com/photo-1578985545062-69928b1d9587?q=80&w=1080&auto=format&fit=crop", "COMECABEM A SEMANA", "Bolo de Chocolate!"),
+        1: ("https://images.unsplash.com/photo-1565958011703-44f9829ba187?q=80&w=1080&auto=format&fit=crop", "HOJE NA VOVO TETE", "Bolo de Morango!"),
+        2: ("https://images.unsplash.com/photo-1509440159596-0249088772ff?q=80&w=1080&auto=format&fit=crop", "SAIDO DO FORNO", "Pao Caseiro!"),
+        3: ("https://images.unsplash.com/photo-1551024506-0bccd828d307?q=80&w=1080&auto=format&fit=crop", "DOCE TENTACAO", "Sobremesa Cremosa!"),
+        4: ("https://images.unsplash.com/photo-1578985545062-69928b1d9587?q=80&w=1080&auto=format&fit=crop", "SEXTA DE FESTA", "Bolo p/ o Fim de Semana!"),
+        5: ("https://images.unsplash.com/photo-1565958011703-44f9829ba187?q=80&w=1080&auto=format&fit=crop", "SABADO NA VOVO", "Encomenda Aberta!"),
+        6: ("https://images.unsplash.com/photo-1509440159596-0249088772ff?q=80&w=1080&auto=format&fit=crop", "DOMINGO EM FAMILIA", "Mesa Cheia de Amor!"),
+    }
+    
+    try:
+        url, top1, top2 = FOTOS_AI[day_index]
+        tmp = arte_path + ".src.jpg"
+        try:
+            urllib.request.urlretrieve(url, tmp)
+            img = Image.open(tmp).convert("RGB")
+            w, h = img.size
+            s = max(1080 / w, 1080 / h)
+            img = img.resize((int(w * s), int(h * s)), Image.LANCZOS)
+            x = (img.width - 1080) // 2
+            y = (img.height - 1080) // 2
+            img = img.crop((x, y, x + 1080, y + 1080))
+        except Exception as e:
+            print(f"Unsplash failed: {e}")
+            img = Image.new("RGB", (1080, 1080), (245, 230, 208))
+        
+        ov = Image.new("RGBA", (1080, 1080), (0, 0, 0, 0))
+        do = ImageDraw.Draw(ov)
+        for yy in range(1080):
+            if yy < 340:
+                do.line([(0, yy), (1080, yy)], fill=(60, 30, 5, int(165 * (1 - yy / 340))))
+            if yy > 600:
+                do.line([(0, yy), (1080, yy)], fill=(40, 20, 5, int(215 * ((yy - 600) / 480))))
+        bg = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+        d = ImageDraw.Draw(bg)
+        
+        def lf(name, size):
+            p = f"C:\\Windows\\Fonts\\{name}"
+            if os.path.exists(p):
+                return ImageFont.truetype(p, size)
+            for alt in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"]:
+                if os.path.exists(alt):
+                    try:
+                        return ImageFont.truetype(alt, size)
+                    except Exception:
+                        pass
+            return ImageFont.load_default()
+        
+        f_s = lf("arialbd.ttf", 36)
+        f_t = lf("georgiai.ttf", 80)
+        f_b = lf("georgiab.ttf", 62)
+        f_u = lf("arial.ttf", 38)
+        f_c = lf("arialbd.ttf", 40)
+        
+        def ct(yy, t, f, fill, st=2):
+            bb = d.textbbox((0, 0), t, font=f, stroke_width=st)
+            d.text(((1080 - (bb[2] - bb[0])) / 2, yy), t, font=f, fill=fill, stroke_width=st, stroke_fill="#3a1e05")
+        
+        ct(55, top1, f_s, "#FFD9A8", 1)
+        ct(125, top2, f_t, "white")
+        d.rounded_rectangle([110, 690, 970, 850], radius=30, fill="#FFF8F0")
+        bb = d.textbbox((0, 0), "Delicias da Vovo Teté", font=f_b)
+        d.text(((1080 - (bb[2] - bb[0])) / 2, 722), "Delicias da Vovo Teté", font=f_b, fill="#5D2E0C")
+        ct(860, "Bolos - Doces - Salgados caseiros", f_u, "white")
+        d.rounded_rectangle([240, 920, 840, 1010], radius=45, fill="#C0392B")
+        ct(938, "Encomenda no WhatsApp", f_c, "white", 0)
+        
+        bg.save(arte_path, "PNG")
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        
+        from flask import send_file
+        return send_file(arte_path, mimetype="image/png")
+    except Exception as e:
+        print(f"Image generation failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.get("/artes/<path:filename>")
 def serve_arte(filename):
     return send_from_directory(ARTES_DIR, filename)
@@ -1133,7 +1239,8 @@ async function loadPosts(status) {
   document.getElementById('content').innerHTML = posts.map(p => `
     <div class="post-card" id="post-${p.id}">
       <div class="arte">
-        ${p.arte_path ? '<img src="/artes/' + p.arte_path.split('/').pop() + '" alt="arte">' : '<div class="no-img">Sem imagem</div>'}
+        <img src="/api/post-image/${p.id}?token=${TOKEN}" alt="arte" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
+        <div class="no-img" style="display:none">Sem imagem</div>
       </div>
       <div class="info">
         <h3><span class="status-badge status-${p.status}">${p.status}</span> ${p.tema || ''}</h3>
