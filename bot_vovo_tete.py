@@ -458,6 +458,107 @@ def api_messages():
     conn.close()
     return jsonify([dict(r) for r in rows])
 
+@app.post("/api/schedule")
+def api_schedule():
+    if not check_dashboard_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.json or {}
+    legenda = data.get("legenda", "").strip()
+    scheduled_date = data.get("date", "")
+    scheduled_time = data.get("time", "12:00")
+    tema = data.get("tema", "")
+    if not legenda or not scheduled_date:
+        return jsonify({"error": "legenda e data obrigatorias"}), 400
+    try:
+        dt = datetime.datetime.strptime(scheduled_date + " " + scheduled_time, "%Y-%m-%d %H:%M")
+    except ValueError:
+        return jsonify({"error": "formato de data/hora invalido"}), 400
+    max_date = datetime.datetime.now() + datetime.timedelta(days=62)
+    if dt > max_date:
+        return jsonify({"error": "maximo 2 meses de antecedencia"}), 400
+    if dt < datetime.datetime.now():
+        return jsonify({"error": "nao podes agendar no passado"}), 400
+    post_id = str(uuid.uuid4())[:8]
+    arte_filename = f"arte-{post_id}.png"
+    arte_path = os.path.join(ARTES_DIR, arte_filename)
+    arte_ok = False
+    try:
+        gerar_arte_diaria(arte_path)
+        arte_ok = True
+    except Exception as e:
+        print("schedule_arte_fail:", e)
+        arte_path = ""
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO posts (id, created_at, status, legenda, arte_path, tema, scheduled_for) VALUES (?, ?, 'scheduled', ?, ?, ?, ?)",
+        (post_id, datetime.datetime.now().isoformat(), legenda, arte_path if arte_ok else "", tema, dt.isoformat())
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "post_id": post_id, "scheduled_for": dt.isoformat()})
+
+@app.get("/api/scheduled")
+def api_scheduled():
+    if not check_dashboard_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM posts WHERE status='scheduled' ORDER BY scheduled_for ASC").fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.post("/api/scheduled/<post_id>/cancel")
+def api_cancel_scheduled(post_id):
+    if not check_dashboard_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    conn = get_db()
+    conn.execute("UPDATE posts SET status='cancelled' WHERE id=? AND status='scheduled'", (post_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.post("/api/scheduled/<post_id>/publish-now")
+def api_publish_now(post_id):
+    if not check_dashboard_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    conn = get_db()
+    row = conn.execute("SELECT * FROM posts WHERE id=? AND status='scheduled'", (post_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "post not found or not scheduled"}), 404
+    arte = row["arte_path"] if row["arte_path"] and os.path.exists(row["arte_path"]) else None
+    try:
+        fb = publish_post(row["legenda"], arte)
+        conn.execute("UPDATE posts SET status='published', published_at=?, fb_response=? WHERE id=?",
+                     (datetime.datetime.now().isoformat(), json.dumps(fb), post_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "fb": fb})
+    except Exception as e:
+        conn.close()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get("/cron/check-scheduled")
+def cron_check_scheduled():
+    if request.args.get("secret") != CRON_SECRET:
+        return jsonify({"ok": False, "error": "bad secret"}), 403
+    now = datetime.datetime.now()
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM posts WHERE status='scheduled' AND scheduled_for <= ?", (now.isoformat(),)).fetchall()
+    published = []
+    for row in rows:
+        arte = row["arte_path"] if row["arte_path"] and os.path.exists(row["arte_path"]) else None
+        try:
+            fb = publish_post(row["legenda"], arte)
+            conn.execute("UPDATE posts SET status='published', published_at=?, fb_response=? WHERE id=?",
+                         (now.isoformat(), json.dumps(fb), row["id"]))
+            published.append(row["id"])
+        except Exception as e:
+            print(f"auto_publish_fail {row['id']}: {e}")
+            conn.execute("UPDATE posts SET status='failed', rejected_reason=? WHERE id=?", (str(e)[:500], row["id"]))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "published_count": len(published), "published_ids": published})
+
 @app.get("/")
 def home():
     return "Bot Vovo Tete online. GET /webhook para verificar. Dashboard: /dashboard?token=vovo-dash-123"
@@ -643,15 +744,22 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#fdf6ee;color:#3a1e0
 .status-rejected{background:#f8d7da;color:#721c24}
 .status-recreated{background:#d1ecf1;color:#0c5460}
 .status-draft{background:#e2e3e5;color:#383d41}
+.status-scheduled{background:#cce5ff;color:#004085}
+.status-cancelled{background:#f8d7da;color:#721c24}
+.status-failed{background:#f8d7da;color:#721c24}
 .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:100;align-items:center;justify-content:center}
 .modal-overlay.show{display:flex}
-.modal{background:white;border-radius:16px;padding:30px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto}
+.modal{background:white;border-radius:16px;padding:30px;max-width:600px;width:90%;max-height:85vh;overflow-y:auto}
 .modal h2{margin-bottom:15px;color:#8B4513}
-.modal textarea{width:100%;height:80px;border:2px solid #f0e0cc;border-radius:10px;padding:10px;font-size:.9rem;resize:vertical}
+.modal textarea{width:100%;height:100px;border:2px solid #f0e0cc;border-radius:10px;padding:10px;font-size:.9rem;resize:vertical}
+.modal input[type="date"],.modal input[type="time"],.modal select{width:100%;padding:10px;border:2px solid #f0e0cc;border-radius:10px;font-size:.9rem;margin-bottom:10px}
+.modal label{display:block;font-weight:600;margin-bottom:5px;color:#5D2E0C;font-size:.9rem}
+.modal .form-row{display:flex;gap:10px;margin-bottom:10px}
+.modal .form-row>div{flex:1}
 .modal .actions{margin-top:15px;display:flex;gap:10px;justify-content:flex-end}
 .empty{text-align:center;padding:60px;color:#a08060}
 .loading{text-align:center;padding:40px;color:#a08060}
-@media(max-width:600px){.post-card .arte{width:100%;height:200px}}
+@media(max-width:600px){.post-card .arte{width:100%;height:200px}.modal .form-row{flex-direction:column}}
 </style>
 </head>
 <body>
@@ -665,10 +773,12 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#fdf6ee;color:#3a1e0
 <div class="container">
   <div class="tabs">
     <button class="tab active" onclick="loadPosts('pending')">Pendentes</button>
+    <button class="tab" onclick="loadPosts('scheduled')">Agendados</button>
     <button class="tab" onclick="loadPosts('published')">Publicados</button>
     <button class="tab" onclick="loadPosts('rejected')">Rejeitados</button>
     <button class="tab" onclick="loadPosts('')">Todos</button>
     <button class="tab" onclick="loadMessages()">Mensagens</button>
+    <button class="tab" style="background:#27ae60;color:white" onclick="openScheduleModal()">+ Agendar Post</button>
   </div>
   <div id="content"><div class="loading">A carregar...</div></div>
 </div>
@@ -679,13 +789,51 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#fdf6ee;color:#3a1e0
     <textarea id="rejectReason"></textarea>
     <div class="actions">
       <button class="btn btn-reject" onclick="confirmReject()">Rejeitar</button>
-      <button class="btn" onclick="closeModal()" style="background:#eee">Cancelar</button>
+      <button class="btn" onclick="closeModal('rejectModal')" style="background:#eee">Cancelar</button>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="scheduleModal">
+  <div class="modal">
+    <h2>Agendar Post</h2>
+    <label>Tema</label>
+    <select id="scheduleTema">
+      <option value="">Personalizado</option>
+      <option value="segunda">Segunda - Bolo fofinho</option>
+      <option value="terca">Terca - Doce que abraca</option>
+      <option value="quarta">Quarta - Mimo do meio da semana</option>
+      <option value="quinta">Quinta - Antecipar fim de semana</option>
+      <option value="sexta">Sexta - Bolo de festa</option>
+      <option value="sabado">Sabado - Encomendas abertas</option>
+      <option value="domingo">Domingo - Sobremesa em familia</option>
+    </select>
+    <label>Legenda</label>
+    <textarea id="scheduleLegenda" placeholder="Escreve a legenda do post..."></textarea>
+    <div class="form-row">
+      <div><label>Data</label><input type="date" id="scheduleDate"></div>
+      <div><label>Hora</label><input type="time" id="scheduleTime" value="12:00"></div>
+    </div>
+    <p style="font-size:.8rem;color:#a08060;margin-bottom:15px">Maximo 2 meses de antecedencia. A arte sera gerada automaticamente.</p>
+    <div class="actions">
+      <button class="btn btn-approve" onclick="confirmSchedule()">Agendar</button>
+      <button class="btn" onclick="closeModal('scheduleModal')" style="background:#eee">Cancelar</button>
     </div>
   </div>
 </div>
 <script>
 const TOKEN = new URLSearchParams(window.location.search).get('token') || '';
 let currentRejectId = null;
+
+function getMinDate() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().split('T')[0];
+}
+function getMaxDate() {
+  const d = new Date();
+  d.setDate(d.getDate() + 62);
+  return d.toISOString().split('T')[0];
+}
 
 async function api(url, opts = {}) {
   const sep = url.includes('?') ? '&' : '?';
@@ -697,8 +845,8 @@ async function loadStats() {
   const s = await api('/api/stats');
   document.getElementById('stats').innerHTML =
     '<span>Pendentes: ' + s.pending + '</span>' +
+    '<span>Agendados: ' + (s.scheduled || 0) + '</span>' +
     '<span>Publicados: ' + s.published + '</span>' +
-    '<span>Rejeitados: ' + s.rejected + '</span>' +
     '<span>Mensagens: ' + s.total_messages + '</span>';
 }
 
@@ -718,7 +866,7 @@ async function loadPosts(status) {
       </div>
       <div class="info">
         <h3><span class="status-badge status-${p.status}">${p.status}</span> ${p.tema || ''}</h3>
-        <div class="meta">ID: ${p.id} | Criado: ${p.created_at ? p.created_at.slice(0,16).replace('T',' ') : '-'} | Recriacoes: ${p.recreate_count || 0}</div>
+        <div class="meta">ID: ${p.id} | Criado: ${p.created_at ? p.created_at.slice(0,16).replace('T',' ') : '-'}${p.scheduled_for ? ' | Agendado: ' + p.scheduled_for.slice(0,16).replace('T',' ') : ''} | Recriacoes: ${p.recreate_count || 0}</div>
         <div class="legenda">${p.legenda || 'Sem legenda'}</div>
         ${p.rejected_reason ? '<div class="meta" style="color:#e74c3c">Motivo: ' + p.rejected_reason + '</div>' : ''}
         ${p.status === 'pending' ? `
@@ -726,6 +874,11 @@ async function loadPosts(status) {
           <button class="btn btn-approve" onclick="approvePost('${p.id}')">Publicar</button>
           <button class="btn btn-reject" onclick="openReject('${p.id}')">Rejeitar</button>
           <button class="btn btn-recreate" onclick="recreatePost('${p.id}')">Recriar</button>
+        </div>` : ''}
+        ${p.status === 'scheduled' ? `
+        <div class="actions">
+          <button class="btn btn-approve" onclick="publishNow('${p.id}')">Publicar Agora</button>
+          <button class="btn btn-reject" onclick="cancelScheduled('${p.id}')">Cancelar</button>
         </div>` : ''}
       </div>
     </div>
@@ -740,13 +893,13 @@ async function approvePost(id) {
 }
 
 function openReject(id) { currentRejectId = id; document.getElementById('rejectModal').classList.add('show'); }
-function closeModal() { document.getElementById('rejectModal').classList.remove('show'); currentRejectId = null; }
+function closeModal(id) { document.getElementById(id).classList.remove('show'); currentRejectId = null; }
 
 async function confirmReject() {
   if (!currentRejectId) return;
   const reason = document.getElementById('rejectReason').value;
   await api('/api/posts/' + currentRejectId + '/reject', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({reason})});
-  closeModal(); document.getElementById('rejectReason').value = '';
+  closeModal('rejectModal'); document.getElementById('rejectReason').value = '';
   loadPosts('pending');
 }
 
@@ -754,6 +907,43 @@ async function recreatePost(id) {
   if (!confirm('Gerar nova legenda + arte?')) return;
   const r = await api('/api/posts/' + id + '/recreate', {method:'POST'});
   if (r.ok) { alert('Novo post criado: ' + r.new_post_id); loadPosts('pending'); } else { alert('Erro: ' + (r.error || 'desconhecido')); }
+}
+
+function openScheduleModal() {
+  document.getElementById('scheduleDate').min = getMinDate();
+  document.getElementById('scheduleDate').max = getMaxDate();
+  document.getElementById('scheduleDate').value = getMinDate();
+  document.getElementById('scheduleTime').value = '12:00';
+  document.getElementById('scheduleLegenda').value = '';
+  document.getElementById('scheduleTema').value = '';
+  document.getElementById('scheduleModal').classList.add('show');
+}
+
+async function confirmSchedule() {
+  const legenda = document.getElementById('scheduleLegenda').value.trim();
+  const date = document.getElementById('scheduleDate').value;
+  const time = document.getElementById('scheduleTime').value;
+  const tema = document.getElementById('scheduleTema').value;
+  if (!legenda) { alert('Escreve uma legenda!'); return; }
+  if (!date) { alert('Escolhe uma data!'); return; }
+  const r = await api('/api/schedule', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({legenda, date, time, tema})});
+  if (r.ok) {
+    alert('Post agendado para ' + date + ' ' + time);
+    closeModal('scheduleModal');
+    loadPosts('scheduled');
+  } else { alert('Erro: ' + (r.error || 'desconhecido')); }
+}
+
+async function publishNow(id) {
+  if (!confirm('Publicar este post agora?')) return;
+  const r = await api('/api/scheduled/' + id + '/publish-now', {method:'POST'});
+  if (r.ok) { alert('Publicado!'); loadPosts('scheduled'); } else { alert('Erro: ' + (r.error || 'desconhecido')); }
+}
+
+async function cancelScheduled(id) {
+  if (!confirm('Cancelar este post agendado?')) return;
+  const r = await api('/api/scheduled/' + id + '/cancel', {method:'POST'});
+  if (r.ok) { alert('Cancelado!'); loadPosts('scheduled'); } else { alert('Erro: ' + (r.error || 'desconhecido')); }
 }
 
 async function loadMessages() {
