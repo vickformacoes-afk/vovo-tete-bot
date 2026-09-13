@@ -217,8 +217,13 @@ def gerar_arte_diaria(dest_path: str) -> str:
     hoje = datetime.date.today()
     url, top1, top2 = FOTOS_SEMANA[hoje.weekday()]
     tmp = dest_path + ".src.jpg"
-    urllib.request.urlretrieve(url, tmp)
-    img = Image.open(tmp).convert("RGB")
+    try:
+        urllib.request.urlretrieve(url, tmp)
+        img = Image.open(tmp).convert("RGB")
+    except Exception as e:
+        print(f"Unsplash download failed: {e}")
+        # Create a solid color fallback image
+        img = Image.new("RGB", (1080, 1080), (245, 230, 208))  # Light brown background
     w, h = img.size
     s = max(1080 / w, 1080 / h)
     img = img.resize((int(w * s), int(h * s)), Image.LANCZOS)
@@ -340,6 +345,78 @@ def check_token():
         return jsonify({"ok": ok, "page": data.get("name", ""), "page_id": data.get("id", ""), "token_start": PAGE_TOKEN[:30] + "..."})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
+
+@app.get("/api/backup")
+def api_backup():
+    if not check_dashboard_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    conn = get_db()
+    posts = [dict(r) for r in conn.execute("SELECT * FROM posts").fetchall()]
+    messages = [dict(r) for r in conn.execute("SELECT * FROM messages").fetchall()]
+    settings = [dict(r) for r in conn.execute("SELECT * FROM settings").fetchall()]
+    conn.close()
+    backup = {
+        "version": "1.0",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "posts": posts,
+        "messages": messages,
+        "settings": settings
+    }
+    return jsonify(backup)
+
+@app.post("/api/restore")
+def api_restore():
+    if not check_dashboard_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.json
+    if not data or "posts" not in data:
+        return jsonify({"error": "backup data invalid"}), 400
+    conn = get_db()
+    conn.execute("DELETE FROM posts")
+    conn.execute("DELETE FROM messages")
+    conn.execute("DELETE FROM settings")
+    for post in data.get("posts", []):
+        conn.execute(
+            "INSERT INTO posts (id, created_at, status, legenda, arte_path, tema, scheduled_for, published_at, fb_post_id, fb_response, rejected_reason, recreate_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (post["id"], post["created_at"], post["status"], post.get("legenda"), post.get("arte_path"), post.get("tema"), post.get("scheduled_for"), post.get("published_at"), post.get("fb_post_id"), post.get("fb_response"), post.get("rejected_reason"), post.get("recreate_count", 0))
+        )
+    for msg in data.get("messages", []):
+        conn.execute(
+            "INSERT INTO messages (id, received_at, psid, sender_name, text, reply) VALUES (?, ?, ?, ?, ?, ?)",
+            (msg["id"], msg["received_at"], msg.get("psid"), msg.get("sender_name"), msg.get("text"), msg.get("reply"))
+        )
+    for setting in data.get("settings", []):
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (setting["key"], setting["value"])
+        )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "message": "Database restored successfully"})
+
+@app.get("/api/export")
+def api_export():
+    if not check_dashboard_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    backup = api_backup().get_json()
+    response = jsonify(backup)
+    response.headers["Content-Disposition"] = f"attachment; filename=vovo-backup-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    return response
+
+@app.post("/api/import")
+def api_import():
+    if not check_dashboard_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    if "file" not in request.files:
+        return jsonify({"error": "no file uploaded"}), 400
+    file = request.files["file"]
+    if not file.filename.endswith(".json"):
+        return jsonify({"error": "file must be JSON"}), 400
+    try:
+        data = json.load(file)
+        return api_restore.__wrapped__(data)
+    except Exception as e:
+        return jsonify({"error": f"invalid JSON: {str(e)}"}), 400
 
 @app.get("/artes/<path:filename>")
 def serve_arte(filename):
@@ -539,8 +616,13 @@ def api_generate_image():
             url = "https://images.unsplash.com/photo-1578985545062-69928b1d9587?q=80&w=1080&auto=format&fit=crop"
             titulo = "Delicia da Vovo"
         tmp = arte_path + ".src.jpg"
-        urllib.request.urlretrieve(url, tmp)
-        img = Image.open(tmp).convert("RGB")
+        try:
+            urllib.request.urlretrieve(url, tmp)
+            img = Image.open(tmp).convert("RGB")
+        except Exception as e:
+            print(f"Unsplash download failed: {e}")
+            # Create a solid color fallback image
+            img = Image.new("RGB", (1080, 1080), (245, 230, 208))  # Light brown background
         w, h = img.size
         s = max(1080 / w, 1080 / h)
         img = img.resize((int(w * s), int(h * s)), Image.LANCZOS)
@@ -866,6 +948,11 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#fdf6ee;color:#3a1e0
   <h1>Delicias da Vovo Teté — Painel</h1>
   <div style="display:flex;align-items:center;gap:20px">
     <div class="stats" id="stats"></div>
+    <button class="btn" onclick="backupDatabase()" style="background:rgba(255,255,255,.2);color:white;font-size:.85rem;padding:6px 14px;border-radius:20px">Backup DB</button>
+    <label class="btn" style="background:rgba(255,255,255,.2);color:white;font-size:.85rem;padding:6px 14px;border-radius:20px;cursor:pointer">
+      Restaurar DB
+      <input type="file" accept=".json" onchange="restoreDatabase(this)" style="display:none">
+    </label>
     <a href="/politica-privacidade" target="_blank" style="color:white;text-decoration:none;font-size:.85rem;background:rgba(255,255,255,.2);padding:6px 14px;border-radius:20px">Politica de Privacidade</a>
   </div>
 </div>
@@ -1173,6 +1260,56 @@ async function loadMessages() {
     </div>
   `).join('') + '</div>';
   loadStats();
+}
+
+async function backupDatabase() {
+  if (!confirm('Criar backup da base de dados?')) return;
+  try {
+    const r = await api('/api/backup');
+    if (r.error) {
+      alert('Erro: ' + r.error);
+      return;
+    }
+    const blob = new Blob([JSON.stringify(r, null, 2)], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'vovo-backup-' + new Date().toISOString().slice(0,10) + '.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    alert('Backup criado e descarregado!');
+  } catch(e) {
+    alert('Erro ao criar backup: ' + e.message);
+  }
+}
+
+async function restoreDatabase(input) {
+  if (!input.files || !input.files[0]) return;
+  if (!confirm('Restaurar a base de dados? Isto vai substituir todos os dados atuais!')) {
+    input.value = '';
+    return;
+  }
+  const file = input.files[0];
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    const r = await api('/api/restore', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+    if (r.ok) {
+      alert('Base de dados restaurada com sucesso!');
+      loadPosts('pending');
+    } else {
+      alert('Erro: ' + (r.error || 'desconhecido'));
+    }
+  } catch(e) {
+    alert('Erro ao restaurar: ' + e.message);
+  }
+  input.value = '';
 }
 
 loadStats(); loadPosts('pending');

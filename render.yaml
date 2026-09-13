@@ -20,6 +20,10 @@ services:
         value: muse-spark-1.3
       - key: CRON_SECRET
         value: vovo-cron-123
+      - key: DASHBOARD_SECRET
+        value: vovo-dash-123
+      - key: WHATSAPP_NUMBER
+        value: "+244923303389"
       - key: PYTHON_VERSION
         value: 3.11.0
   - type: cron
@@ -28,7 +32,17 @@ services:
     plan: free
     schedule: "0 8 * * *"
     buildCommand: "pip install requests"
-    startCommand: 'curl "https://vovo-tete-bot-1.onrender.com/cron/daily?secret=vovo-cron-123"'
+    startCommand: 'curl "https://vovo-tete-bot.onrender.com/cron/daily?secret=vovo-cron-123"'
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+  - type: cron
+    name: vovo-tete-scheduled
+    runtime: python
+    plan: free
+    schedule: "*/30 * * * *"
+    buildCommand: "pip install requests"
+    startCommand: 'curl "https://vovo-tete-bot.onrender.com/cron/check-scheduled?secret=vovo-cron-123"'
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
